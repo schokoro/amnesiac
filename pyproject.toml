@@ -1,5 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "amnesiac"
-version = "0.1.0"
+version = "0.1.0.dev0"
+description = "Reusable LLM logic for news summarization and document selection"
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "openai",
+    "httpx",
+    "pydantic",
+]
+
+[project.optional-dependencies]
+select = ["numpy"]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "ruff",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["amnesiac"]
+
+[tool.ruff]
+line-length = 100
+# Ruff formats Python snippets inside Markdown; docs/api.md is a frozen contract with intentional alignment.
+extend-exclude = ["*.md"]
+
+[tool.ruff.format]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

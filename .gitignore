@@ -227,3 +227,4 @@ AGENTS.md
 CLAUDE.md
 .idea/
 artefacts/
+.venv*/
