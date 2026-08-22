@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from pathlib import Path
 
 import amnesiac
 
@@ -23,6 +24,7 @@ def test_root_does_not_expose_non_root_api() -> None:
 
 
 def test_root_import_does_not_import_subsystems() -> None:
+    repository_root = Path(__file__).resolve().parent.parent
     code = """
 import sys
 import amnesiac
@@ -36,6 +38,7 @@ print(repr(loaded))
         [sys.executable, "-c", code],
         check=False,
         capture_output=True,
+        cwd=repository_root,
         text=True,
     )
 

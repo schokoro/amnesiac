@@ -1,7 +1,6 @@
 """Tests for provider retry and cancellation behavior."""
 
 import asyncio
-import inspect
 import json
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
@@ -10,7 +9,6 @@ import httpx
 import openai
 import pytest
 
-import amnesiac.llm
 from amnesiac.llm import _call_with_retry
 from amnesiac.types import Usage
 
@@ -56,7 +54,7 @@ async def test_backoff_repeats_last_configured_delay(
 
     assert exc_info.value is errors[-1]
     assert delays == [1, 2, 3, 3]
-    assert len(client.create.calls) == 5
+    assert len(client.recorded) == 5
 
 
 RETRYABLE_ERRORS = [
@@ -87,7 +85,7 @@ async def test_each_retryable_error_succeeds_on_second_attempt(
     )
 
     assert result == "expected content"
-    assert len(client.create.calls) == 2
+    assert len(client.recorded) == 2
     assert delays == [7]
 
 
@@ -123,7 +121,7 @@ async def test_non_retryable_errors_escape_first_attempt(
         )
 
     assert exc_info.value is error
-    assert len(client.create.calls) == 1
+    assert len(client.recorded) == 1
     assert delays == []
 
 
@@ -144,13 +142,6 @@ async def test_cancellation_propagates_without_sleep_or_usage_damage(
             retry_delays=(1, 2, 3),
         )
 
-    assert len(client.create.calls) == 1
+    assert len(client.recorded) == 1
     assert delays == []
     assert usage == Usage()
-
-
-def test_module_has_no_forbidden_exception_handler() -> None:
-    source = inspect.getsource(amnesiac.llm)
-
-    assert "except Exception" not in source
-    assert "except BaseException" not in source

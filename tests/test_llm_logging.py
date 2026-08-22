@@ -68,3 +68,24 @@ def test_package_contains_no_print_calls() -> None:
                 print_locations.append(f"{source_path}:{node.lineno}")
 
     assert print_locations == []
+
+
+def test_package_contains_no_forbidden_exception_handlers() -> None:
+    package_file = amnesiac.__file__
+    assert package_file is not None
+    package_dir = Path(package_file).resolve().parent
+
+    handler_locations: list[str] = []
+    for source_path in package_dir.rglob("*.py"):
+        tree = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ExceptHandler) and (
+                node.type is None
+                or (
+                    isinstance(node.type, ast.Name)
+                    and node.type.id in {"Exception", "BaseException"}
+                )
+            ):
+                handler_locations.append(f"{source_path}:{node.lineno}")
+
+    assert handler_locations == []

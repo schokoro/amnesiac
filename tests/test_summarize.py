@@ -63,7 +63,7 @@ async def test_empty_axes_raise_configuration_error(
     with pytest.raises(ConfigurationError):
         await summarize(client=client, model="model", axes={}, prompts=make_prompts())
 
-    assert client.create.calls == []
+    assert client.recorded == []
 
 
 async def test_unbound_axis_prompt_raises_before_any_provider_call(
@@ -84,7 +84,7 @@ async def test_unbound_axis_prompt_raises_before_any_provider_call(
 
     assert "axis_system" in str(exc_info.value)
     assert "horizon_days" in str(exc_info.value)
-    assert client.create.calls == []
+    assert client.recorded == []
 
 
 async def test_empty_document_list_still_produces_axis_call(
@@ -95,8 +95,8 @@ async def test_empty_document_list_still_produces_axis_call(
 
     await summarize(client=client, model="model", axes={"empty": []}, prompts=make_prompts())
 
-    assert len(client.create.calls) == 2
-    assert client.create.calls[0]["messages"][1]["content"] == "axis user empty: "
+    assert len(client.recorded) == 2
+    assert client.recorded[0]["messages"][1]["content"] == "axis user empty: "
 
 
 async def test_explicit_concurrency_conflicts_with_supplied_limiter(
@@ -114,7 +114,7 @@ async def test_explicit_concurrency_conflicts_with_supplied_limiter(
             config=SummarizeConfig(concurrency=5),
         )
 
-    assert client.create.calls == []
+    assert client.recorded == []
 
 
 async def test_supplied_limiter_is_legal_with_default_config(
@@ -183,7 +183,7 @@ async def test_every_call_uses_limiter_and_meta_is_last_and_single(
     )
 
     assert (limiter.enters, limiter.exits) == (3, 3)
-    systems = [call["messages"][0]["content"] for call in client.create.calls]
+    systems = [call["messages"][0]["content"] for call in client.recorded]
     assert systems == ["axis system first", "axis system second", "meta system"]
 
 
@@ -209,7 +209,7 @@ async def test_meta_blocks_keep_axis_order_when_an_axis_fails(
         config=SummarizeConfig(failed_axis_placeholder=placeholder),
     )
 
-    meta_user = client.create.calls[-1]["messages"][1]["content"]
+    meta_user = client.recorded[-1]["messages"][1]["content"]
     assert meta_user.index("BLOCK[b]=summary-b") < meta_user.index("BLOCK[a]=MISSING")
     assert meta_user.index("BLOCK[a]=MISSING") < meta_user.index("BLOCK[c]=summary-c")
     assert list(result.axis_summaries) == ["b", "a", "c"]
@@ -235,7 +235,7 @@ async def test_failed_axis_degrades_into_result_and_actual_meta_prompt(
     assert result.failed_axes == ["bad"]
     assert result.axis_errors == {"bad": repr(error)}
     assert result.axis_summaries["bad"] == placeholder
-    assert placeholder in client.create.calls[-1]["messages"][1]["content"]
+    assert placeholder in client.recorded[-1]["messages"][1]["content"]
 
 
 async def test_too_many_failures_carries_all_errors_and_skips_meta(
@@ -258,7 +258,7 @@ async def test_too_many_failures_carries_all_errors_and_skips_meta(
         "two": repr(errors[1]),
         "three": repr(errors[2]),
     }
-    assert len(client.create.calls) == 3
+    assert len(client.recorded) == 3
 
 
 async def test_empty_axis_content_is_one_failed_call_and_reaches_meta(
@@ -276,8 +276,8 @@ async def test_empty_axis_content_is_one_failed_call_and_reaches_meta(
 
     assert result.failed_axes == ["empty"]
     assert "SummarizeError" in result.axis_errors["empty"]
-    assert result.axis_summaries["empty"] in client.create.calls[-1]["messages"][1]["content"]
-    assert len(client.create.calls) == 2
+    assert result.axis_summaries["empty"] in client.recorded[-1]["messages"][1]["content"]
+    assert len(client.recorded) == 2
 
 
 async def test_empty_meta_content_raises_summarize_error(
@@ -368,7 +368,7 @@ async def test_axis_cancellation_escapes_and_skips_meta(
             prompts=make_prompts(),
         )
 
-    assert len(client.create.calls) == 1
+    assert len(client.recorded) == 1
 
 
 async def test_meta_provider_exception_escapes_unchanged(

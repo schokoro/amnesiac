@@ -53,9 +53,13 @@ class FailingChoicesResponse:
 class FakeCreate:
     """Scripted implementation of ``chat.completions.create``."""
 
-    def __init__(self, outcomes: Sequence[object]) -> None:
+    def __init__(
+        self,
+        outcomes: Sequence[object],
+        recorded: list[dict[str, object]],
+    ) -> None:
         self._outcomes = iter(outcomes)
-        self.calls: list[dict[str, object]] = []
+        self._recorded = recorded
 
     async def __call__(
         self,
@@ -64,7 +68,7 @@ class FakeCreate:
         messages: Sequence[dict[str, str]],
         temperature: float,
     ) -> object:
-        self.calls.append(
+        self._recorded.append(
             {
                 "model": model,
                 "messages": messages,
@@ -95,8 +99,13 @@ class FakeClient:
     """A provider client exposing only ``chat.completions.create``."""
 
     def __init__(self, outcomes: Sequence[object]) -> None:
-        self.create = FakeCreate(outcomes)
-        self.chat = FakeChat(FakeCompletions(self.create))
+        self.recorded: list[dict[str, object]] = []
+        create = FakeCreate(outcomes, self.recorded)
+        self.chat = FakeChat(FakeCompletions(create))
+
+    def __getattr__(self, name: str) -> object:
+        """Reject attributes outside the fake client's explicit public surface."""
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
 
 @pytest.fixture
