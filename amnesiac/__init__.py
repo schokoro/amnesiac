@@ -1,4 +1,9 @@
 """Package root without subsystem re-exports.
 
-Re-exporting select here would break ``import amnesiac`` when its optional extra is absent.
+Subsystem re-exports would make ``import amnesiac`` depend on optional extras.
 """
+
+from .exceptions import AmnesiacError, ConfigurationError
+from .types import Doc
+
+__all__ = ["AmnesiacError", "ConfigurationError", "Doc"]
