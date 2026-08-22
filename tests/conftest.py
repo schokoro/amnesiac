@@ -37,6 +37,19 @@ class ProviderResponse:
     usage: ProviderUsage | None = None
 
 
+class FailingChoicesResponse:
+    """A fake response that fails while its choices are extracted."""
+
+    def __init__(self, usage: ProviderUsage, error: BaseException) -> None:
+        self.usage = usage
+        self._error = error
+
+    @property
+    def choices(self) -> list[Choice]:
+        """Raise the scripted extraction error."""
+        raise self._error
+
+
 class FakeCreate:
     """Scripted implementation of ``chat.completions.create``."""
 
@@ -108,6 +121,23 @@ def response_factory() -> Callable[..., ProviderResponse]:
         if include_usage:
             usage = ProviderUsage(prompt_tokens, completion_tokens, total_tokens)
         return ProviderResponse(choices=[Choice(message=Message(content))], usage=usage)
+
+    return make_response
+
+
+@pytest.fixture
+def failing_choices_response_factory() -> Callable[..., FailingChoicesResponse]:
+    """Build a response with usage that fails during choice extraction."""
+
+    def make_response(
+        error: BaseException,
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+    ) -> FailingChoicesResponse:
+        usage = ProviderUsage(prompt_tokens, completion_tokens, total_tokens)
+        return FailingChoicesResponse(usage, error)
 
     return make_response
 
