@@ -54,6 +54,9 @@ def select_by_axis(
     order_by: Sequence[float] | None = None,
 ) -> dict[str, list[int]]:
     """Select document-row indices independently for each query axis."""
+    if top_k <= 0:
+        raise ValueError(f"top_k must be positive, got {top_k}")
+
     n = len(X)
     if len(texts) != n:
         raise ConfigurationError(f"len(texts)={len(texts)} does not match len(X)={n}")

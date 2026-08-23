@@ -268,3 +268,48 @@ def test_repeated_calls_are_deterministic() -> None:
     results = [select_by_axis(X, query, **kwargs) for _ in range(3)]
 
     assert results[0] == results[1] == results[2] == {"axis": [0, 1]}
+
+
+def test_top_k_zero_raises_value_error() -> None:
+    with pytest.raises(ValueError, match="top_k must be positive"):
+        select_by_axis(
+            np.array([[1.0, 0.0]]),
+            {"axis": np.array([1.0, 0.0])},
+            texts=["one"],
+            top_k=0,
+            dedup_threshold=1.1,
+        )
+
+
+def test_negative_top_k_raises_value_error() -> None:
+    with pytest.raises(ValueError, match="top_k must be positive"):
+        select_by_axis(
+            np.array([[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]),
+            {"axis": np.array([1.0, 0.0])},
+            texts=["one", "two", "three"],
+            top_k=-1,
+            dedup_threshold=1.1,
+        )
+
+
+def test_top_k_zero_raises_value_error_for_empty_x() -> None:
+    with pytest.raises(ValueError, match="top_k must be positive"):
+        select_by_axis(
+            np.empty((0, 2)),
+            {"axis": np.array([1.0, 0.0])},
+            texts=[],
+            top_k=0,
+            dedup_threshold=1.1,
+        )
+
+
+def test_top_k_one_remains_valid() -> None:
+    result = select_by_axis(
+        np.array([[1.0, 0.0]]),
+        {"axis": np.array([1.0, 0.0])},
+        texts=["one"],
+        top_k=1,
+        dedup_threshold=1.1,
+    )
+
+    assert result == {"axis": [0]}
