@@ -4,10 +4,11 @@ build-backend = "hatchling.build"
 
 [project]
 name = "amnesiac"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "Reusable LLM logic for news summarization and document selection"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "openai",
@@ -26,12 +27,25 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["amnesiac"]
 
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "amnesiac",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "pyproject.toml",
+]
+exclude = [
+    "/**/__pycache__",
+    "/**/.pytest_cache",
+    "/**/.ruff_cache",
+    "/**/.mypy_cache",
+]
+
 [tool.ruff]
 line-length = 100
 # Ruff formats Python snippets inside Markdown; docs/api.md is a frozen contract with intentional alignment.
 extend-exclude = ["*.md"]
-
-[tool.ruff.format]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
