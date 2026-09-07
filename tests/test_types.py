@@ -64,3 +64,22 @@ def test_add_usage_mutates_target_and_sums_every_field() -> None:
     assert result is None
     assert target is original_target
     assert target == Usage(prompt_tokens=11, completion_tokens=22, total_tokens=33, calls=44)
+
+
+def test_usage_add_returns_new_pairwise_sum_without_mutating_operands() -> None:
+    left = Usage(prompt_tokens=1, completion_tokens=2, total_tokens=3, calls=4)
+    right = Usage(prompt_tokens=10, completion_tokens=20, total_tokens=30, calls=40)
+
+    result = left + right
+
+    assert result == Usage(prompt_tokens=11, completion_tokens=22, total_tokens=33, calls=44)
+    assert result is not left
+    assert result is not right
+    assert left == Usage(prompt_tokens=1, completion_tokens=2, total_tokens=3, calls=4)
+    assert right == Usage(prompt_tokens=10, completion_tokens=20, total_tokens=30, calls=40)
+
+
+@pytest.mark.parametrize("other", [1, "x", None])
+def test_usage_add_rejects_non_usage_operands(other: object) -> None:
+    with pytest.raises(TypeError):
+        Usage() + other

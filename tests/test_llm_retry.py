@@ -57,12 +57,140 @@ async def test_backoff_repeats_last_configured_delay(
     assert len(client.recorded) == 5
 
 
+async def test_empty_content_retries_and_then_succeeds(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+    recording_sleep: tuple[list[float], Callable[[float], Awaitable[None]]],
+) -> None:
+    client = fake_client_factory(
+        [response_factory(None), response_factory(None), response_factory("text")]
+    )
+    delays, sleep = recording_sleep
+
+    result = await call_provider(
+        client,
+        Usage(),
+        sleep,
+        max_attempts=3,
+        retry_delays=(2, 4),
+    )
+
+    assert result == "text"
+    assert len(client.recorded) == 3
+    assert delays == [2, 4]
+
+
+async def test_empty_content_exhausts_and_returns_none(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+    recording_sleep: tuple[list[float], Callable[[float], Awaitable[None]]],
+) -> None:
+    client = fake_client_factory([response_factory(None) for _ in range(3)])
+    delays, sleep = recording_sleep
+
+    result = await call_provider(
+        client,
+        Usage(),
+        sleep,
+        max_attempts=3,
+        retry_delays=(3, 6),
+    )
+
+    assert result is None
+    assert len(client.recorded) == 3
+    assert delays == [3, 6]
+
+
+async def test_empty_content_backoff_repeats_last_configured_delay(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+    recording_sleep: tuple[list[float], Callable[[float], Awaitable[None]]],
+) -> None:
+    client = fake_client_factory([response_factory(None) for _ in range(5)])
+    delays, sleep = recording_sleep
+
+    result = await call_provider(
+        client,
+        Usage(),
+        sleep,
+        max_attempts=5,
+        retry_delays=(1, 2, 3),
+    )
+
+    assert result is None
+    assert len(client.recorded) == 5
+    assert delays == [1, 2, 3, 3]
+
+
+async def test_usage_counts_every_billed_empty_content_attempt(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+    recording_sleep: tuple[list[float], Callable[[float], Awaitable[None]]],
+) -> None:
+    client = fake_client_factory(
+        [
+            response_factory(
+                None,
+                prompt_tokens=2,
+                completion_tokens=3,
+                total_tokens=5,
+                include_usage=True,
+            ),
+            response_factory(
+                None,
+                prompt_tokens=7,
+                completion_tokens=11,
+                total_tokens=18,
+                include_usage=True,
+            ),
+            response_factory(
+                "text",
+                prompt_tokens=13,
+                completion_tokens=17,
+                total_tokens=30,
+                include_usage=True,
+            ),
+        ]
+    )
+    delays, sleep = recording_sleep
+    usage = Usage()
+
+    result = await call_provider(
+        client,
+        usage,
+        sleep,
+        max_attempts=3,
+        retry_delays=(1,),
+    )
+
+    assert result == "text"
+    assert usage == Usage(prompt_tokens=22, completion_tokens=31, total_tokens=53, calls=3)
+    assert len(client.recorded) == 3
+    assert delays == [1, 1]
+
+
 RETRYABLE_ERRORS = [
     json.JSONDecodeError("msg", "doc", 0),
     httpx.ReadTimeout("msg"),
     httpx.RemoteProtocolError("msg"),
     openai.APIConnectionError(request=httpx.Request("POST", "https://example.invalid")),
     openai.APITimeoutError(request=httpx.Request("POST", "https://example.invalid")),
+    openai.RateLimitError(
+        "msg",
+        response=httpx.Response(
+            429,
+            request=httpx.Request("POST", "https://example.invalid"),
+        ),
+        body=None,
+    ),
+    openai.InternalServerError(
+        "msg",
+        response=httpx.Response(
+            500,
+            request=httpx.Request("POST", "https://example.invalid"),
+        ),
+        body=None,
+    ),
 ]
 
 
@@ -95,6 +223,14 @@ NON_RETRYABLE_ERRORS = [
         "msg",
         response=httpx.Response(
             429,
+            request=httpx.Request("POST", "https://example.invalid"),
+        ),
+        body=None,
+    ),
+    openai.PermissionDeniedError(
+        "msg",
+        response=httpx.Response(
+            403,
             request=httpx.Request("POST", "https://example.invalid"),
         ),
         body=None,

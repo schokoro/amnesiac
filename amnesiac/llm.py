@@ -21,7 +21,13 @@ _RETRYABLE_ERRORS = (
     httpx.RemoteProtocolError,
     openai.APIConnectionError,
     openai.APITimeoutError,
+    openai.RateLimitError,
+    openai.InternalServerError,
 )
+
+
+class _EmptyContentError(Exception):
+    """Signal an empty provider response within the retry loop."""
 
 
 async def _call_with_retry(
@@ -63,10 +69,15 @@ async def _call_with_retry(
                         calls=1,
                     ),
                 )
-            return response.choices[0].message.content
-        except _RETRYABLE_ERRORS as exc:
+            content = response.choices[0].message.content
+            if content is None:
+                raise _EmptyContentError("provider returned empty content")
+            return content
+        except _RETRYABLE_ERRORS + (_EmptyContentError,) as exc:
             last_error = exc
             if attempt >= max_attempts:
+                if isinstance(exc, _EmptyContentError):
+                    return None
                 logger.exception(
                     "OpenRouter request failed after %s attempts for axis %s",
                     max_attempts,
