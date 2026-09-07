@@ -18,11 +18,15 @@ from amnesiac.exceptions import (
     TooManyAxisFailures,
 )
 from amnesiac.summarize import (
+    AxisSummariesResult,
+    MetaResult,
     PromptPack,
     SummarizeConfig,
     SummarizeResult,
     Usage,
     summarize,
+    summarize_axes,
+    summarize_meta,
 )
 from amnesiac.types import Doc
 
@@ -54,6 +58,17 @@ class CountingLimiter(AbstractAsyncContextManager[None]):
 
     async def __aexit__(self, *args: object) -> None:
         self.exits += 1
+
+
+class RecordingLimiter(AbstractAsyncContextManager[None]):
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
+    async def __aenter__(self) -> None:
+        self.events.append("enter")
+
+    async def __aexit__(self, *args: object) -> None:
+        self.events.append("exit")
 
 
 async def test_empty_axes_raise_configuration_error(
@@ -528,6 +543,404 @@ async def test_usage_includes_meta_and_usage_from_failed_attempt(
     )
 
 
+async def test_summarize_axes_returns_only_axis_stage_and_uses_limiter_before_calls(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+) -> None:
+    events: list[str] = []
+    limiter = RecordingLimiter(events)
+    client = fake_client_factory(
+        [
+            response_factory("summary-b"),
+            response_factory("summary-a"),
+            response_factory("summary-c"),
+        ]
+    )
+    original_create = client.chat.completions.create
+
+    async def recording_create(**kwargs: Any) -> object:
+        events.append("call")
+        return await original_create(**kwargs)
+
+    client.chat.completions.create = recording_create
+
+    result = await summarize_axes(
+        client=client,
+        model="model",
+        axes={"b": [make_doc()], "a": [make_doc()], "c": [make_doc()]},
+        prompts=make_prompts(),
+        limiter=limiter,
+    )
+
+    assert isinstance(result, AxisSummariesResult)
+    assert result.axis_summaries == {
+        "b": "summary-b",
+        "a": "summary-a",
+        "c": "summary-c",
+    }
+    assert result.failed_axes == []
+    assert result.axis_errors == {}
+    assert result.usage == Usage()
+    assert set(AxisSummariesResult.model_fields) == {
+        "axis_summaries",
+        "failed_axes",
+        "axis_errors",
+        "usage",
+    }
+    assert not hasattr(result, "meta")
+    assert len(client.recorded) == 3
+    assert all(call["messages"][0]["content"] != "meta system" for call in client.recorded)
+    assert events == ["enter", "call", "exit"] * 3
+
+
+async def test_summarize_axes_rejects_empty_axes_and_limiter_concurrency_conflict(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+) -> None:
+    empty_client = fake_client_factory([])
+    with pytest.raises(ConfigurationError):
+        await summarize_axes(
+            client=empty_client,
+            model="model",
+            axes={},
+            prompts=make_prompts(),
+        )
+
+    conflict_client = fake_client_factory([])
+    with pytest.raises(ConfigurationError):
+        await summarize_axes(
+            client=conflict_client,
+            model="model",
+            axes={"axis": [make_doc()]},
+            prompts=make_prompts(),
+            limiter=CountingLimiter(),
+            config=SummarizeConfig(concurrency=2),
+        )
+
+    assert empty_client.recorded == []
+    assert conflict_client.recorded == []
+
+
+async def test_summarize_axes_raises_on_threshold_and_skips_meta(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+) -> None:
+    client = fake_client_factory([ValueError("one"), ValueError("two"), ValueError("three")])
+
+    with pytest.raises(TooManyAxisFailures):
+        await summarize_axes(
+            client=client,
+            model="model",
+            axes={name: [make_doc()] for name in ("one", "two", "three")},
+            prompts=make_prompts(),
+            config=SummarizeConfig(max_failed_axes=2),
+        )
+
+    assert len(client.recorded) == 3
+    assert all(call["messages"][0]["content"] != "meta system" for call in client.recorded)
+
+
+async def test_summarize_axes_builds_semaphore_from_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+) -> None:
+    resolved: list[AbstractAsyncContextManager[Any]] = []
+    original = summarizer_module._resolve_limiter
+
+    def recording_resolve(**kwargs: Any) -> AbstractAsyncContextManager[Any]:
+        result = original(**kwargs)
+        resolved.append(result)
+        return result
+
+    monkeypatch.setattr(summarizer_module, "_resolve_limiter", recording_resolve)
+    client = fake_client_factory([response_factory("axis")])
+
+    await summarize_axes(
+        client=client,
+        model="model",
+        axes={"axis": [make_doc()]},
+        prompts=make_prompts(),
+        config=SummarizeConfig(concurrency=4),
+    )
+
+    assert len(resolved) == 1
+    assert isinstance(resolved[0], asyncio.Semaphore)
+    assert resolved[0]._value == 4
+
+
+async def test_summarize_meta_calls_once_with_only_supplied_summaries_and_limiter(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+) -> None:
+    events: list[str] = []
+    limiter = RecordingLimiter(events)
+    client = fake_client_factory([response_factory("meta result")])
+    original_create = client.chat.completions.create
+
+    async def recording_create(**kwargs: Any) -> object:
+        events.append("call")
+        return await original_create(**kwargs)
+
+    client.chat.completions.create = recording_create
+
+    result = await summarize_meta(
+        client=client,
+        model="model",
+        axis_summaries={"first": "ready one", "second": "ready two"},
+        prompts=make_prompts(),
+        limiter=limiter,
+    )
+
+    assert result == MetaResult(meta="meta result", usage=Usage())
+    assert len(client.recorded) == 1
+    assert client.recorded[0]["messages"] == [
+        {"role": "system", "content": "meta system"},
+        {
+            "role": "user",
+            "content": "meta user: BLOCK[first]=ready one\n---\nBLOCK[second]=ready two",
+        },
+    ]
+    assert events == ["enter", "call", "exit"]
+
+
+async def test_summarize_meta_builds_semaphore_from_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+) -> None:
+    resolved: list[AbstractAsyncContextManager[Any]] = []
+    original = summarizer_module._resolve_limiter
+
+    def recording_resolve(**kwargs: Any) -> AbstractAsyncContextManager[Any]:
+        result = original(**kwargs)
+        resolved.append(result)
+        return result
+
+    monkeypatch.setattr(summarizer_module, "_resolve_limiter", recording_resolve)
+    client = fake_client_factory([response_factory("meta")])
+
+    result = await summarize_meta(
+        client=client,
+        model="model",
+        axis_summaries={"axis": "summary"},
+        prompts=make_prompts(),
+        config=SummarizeConfig(concurrency=7),
+    )
+
+    assert result == MetaResult(meta="meta", usage=Usage())
+    assert len(resolved) == 1
+    assert isinstance(resolved[0], asyncio.Semaphore)
+    assert resolved[0]._value == 7
+
+
+async def test_summarize_meta_rejects_empty_input_and_limiter_concurrency_conflict(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+) -> None:
+    empty_client = fake_client_factory([])
+    with pytest.raises(ConfigurationError):
+        await summarize_meta(
+            client=empty_client,
+            model="model",
+            axis_summaries={},
+            prompts=make_prompts(),
+        )
+
+    conflict_client = fake_client_factory([])
+    with pytest.raises(ConfigurationError):
+        await summarize_meta(
+            client=conflict_client,
+            model="model",
+            axis_summaries={"axis": "summary"},
+            prompts=make_prompts(),
+            limiter=CountingLimiter(),
+            config=SummarizeConfig(concurrency=2),
+        )
+
+    assert empty_client.recorded == []
+    assert conflict_client.recorded == []
+
+
+async def test_summarize_meta_preserves_input_mapping_block_order(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+) -> None:
+    client = fake_client_factory([response_factory("meta")])
+
+    await summarize_meta(
+        client=client,
+        model="model",
+        axis_summaries={"б": "summary-b", "а": "summary-a", "в": "summary-v"},
+        prompts=make_prompts(),
+    )
+
+    assert client.recorded[0]["messages"][1]["content"] == (
+        "meta user: BLOCK[б]=summary-b\n---\nBLOCK[а]=summary-a\n---\nBLOCK[в]=summary-v"
+    )
+
+
+async def test_summarize_equals_explicit_stage_composition_byte_for_byte(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+) -> None:
+    error = ValueError("axis failed")
+    outcomes = [
+        error,
+        response_factory(
+            "good summary",
+            prompt_tokens=1,
+            completion_tokens=2,
+            total_tokens=3,
+            include_usage=True,
+        ),
+        response_factory(
+            "meta result",
+            prompt_tokens=4,
+            completion_tokens=5,
+            total_tokens=9,
+            include_usage=True,
+        ),
+    ]
+    composed_client = fake_client_factory(outcomes)
+    staged_client = fake_client_factory(outcomes)
+    axes = {"bad": [make_doc("bad news")], "good": [make_doc("good news")]}
+    config = SummarizeConfig(max_failed_axes=1, failed_axis_placeholder="MISSING")
+
+    composed = await summarize(
+        client=composed_client,
+        model="model",
+        axes=axes,
+        prompts=make_prompts(),
+        config=config,
+    )
+    axis_stage = await summarize_axes(
+        client=staged_client,
+        model="model",
+        axes=axes,
+        prompts=make_prompts(),
+        config=config,
+    )
+    meta_stage = await summarize_meta(
+        client=staged_client,
+        model="model",
+        axis_summaries=axis_stage.axis_summaries,
+        prompts=make_prompts(),
+        config=config,
+    )
+
+    assert composed.meta == meta_stage.meta
+    assert composed.axis_summaries == axis_stage.axis_summaries
+    assert composed.failed_axes == axis_stage.failed_axes
+    assert composed.axis_errors == axis_stage.axis_errors
+    assert composed.usage == axis_stage.usage + meta_stage.usage
+    assert len(composed_client.recorded) == len(staged_client.recorded)
+    assert composed_client.recorded == staged_client.recorded
+
+
+async def test_summarize_with_explicit_concurrency_and_no_limiter_completes(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+) -> None:
+    client = fake_client_factory([response_factory("axis"), response_factory("meta")])
+
+    result = await summarize(
+        client=client,
+        model="model",
+        axes={"axis": [make_doc()]},
+        prompts=make_prompts(),
+        config=SummarizeConfig(concurrency=2),
+    )
+
+    assert result.meta == "meta"
+    assert len(client.recorded) == 2
+
+
+async def test_meta_recovery_costs_one_call_and_reuses_identical_prompt(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+) -> None:
+    failed_client = fake_client_factory(
+        [
+            response_factory("summary-b"),
+            response_factory("summary-a"),
+            response_factory(None),
+            response_factory(None),
+            response_factory(None),
+        ]
+    )
+
+    with pytest.raises(MetaSummaryError) as exc_info:
+        await summarize(
+            client=failed_client,
+            model="model",
+            axes={"б": [make_doc()], "а": [make_doc()]},
+            prompts=make_prompts(),
+            config=SummarizeConfig(retry_delays=(0.0,)),
+        )
+
+    recovery_client = fake_client_factory([response_factory("recovered meta")])
+    recovered = await summarize_meta(
+        client=recovery_client,
+        model="model",
+        axis_summaries=exc_info.value.axis_summaries,
+        prompts=make_prompts(),
+    )
+
+    assert len(recovery_client.recorded) == 1
+    assert recovered == MetaResult(meta="recovered meta", usage=Usage())
+    assert recovery_client.recorded[0]["messages"] == failed_client.recorded[-1]["messages"]
+
+
+async def test_summarize_meta_empty_exhaustion_carries_input_and_exact_usage(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+) -> None:
+    axis_summaries = {"б": "summary-b", "а": "summary-a", "в": "summary-v"}
+    client = fake_client_factory(
+        [
+            response_factory(
+                None,
+                prompt_tokens=1,
+                completion_tokens=2,
+                total_tokens=3,
+                include_usage=True,
+            ),
+            response_factory(
+                None,
+                prompt_tokens=4,
+                completion_tokens=5,
+                total_tokens=9,
+                include_usage=True,
+            ),
+            response_factory(
+                None,
+                prompt_tokens=6,
+                completion_tokens=7,
+                total_tokens=13,
+                include_usage=True,
+            ),
+        ]
+    )
+
+    with pytest.raises(MetaSummaryError) as exc_info:
+        await summarize_meta(
+            client=client,
+            model="model",
+            axis_summaries=axis_summaries,
+            prompts=make_prompts(),
+            config=SummarizeConfig(retry_delays=(0.0,)),
+        )
+
+    assert exc_info.value.axis_summaries == axis_summaries
+    assert list(exc_info.value.axis_summaries) == ["б", "а", "в"]
+    assert exc_info.value.failed_axes == []
+    assert exc_info.value.axis_errors == {}
+    assert exc_info.value.usage == Usage(
+        prompt_tokens=11,
+        completion_tokens=14,
+        total_tokens=25,
+        calls=3,
+    )
+
+
 def test_summarize_result_is_mutable_and_ignores_extra_fields() -> None:
     result = SummarizeResult(
         meta="meta",
@@ -542,6 +955,11 @@ def test_summarize_result_is_mutable_and_ignores_extra_fields() -> None:
 
     assert result.meta == "changed"
     assert result.model_config == {}
+
+
+def test_stage_result_models_use_default_model_config() -> None:
+    assert AxisSummariesResult.model_config == {}
+    assert MetaResult.model_config == {}
 
 
 async def test_axis_cancellation_escapes_and_skips_meta(
@@ -589,6 +1007,8 @@ def test_summarize_subpackage_exports_exact_public_api() -> None:
     import amnesiac.summarize as summarize_package
 
     assert summarize_package.__all__ == [
+        "AxisSummariesResult",
+        "MetaResult",
         "MetaSummaryError",
         "PromptPack",
         "PromptRenderError",
@@ -598,4 +1018,6 @@ def test_summarize_subpackage_exports_exact_public_api() -> None:
         "TooManyAxisFailures",
         "Usage",
         "summarize",
+        "summarize_axes",
+        "summarize_meta",
     ]

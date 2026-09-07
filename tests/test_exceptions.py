@@ -34,6 +34,8 @@ def test_too_many_axis_failures_preserves_failures() -> None:
     error = TooManyAxisFailures(failures)
 
     assert error.failures == failures
+    assert error.axis_summaries == {}
+    assert error.usage == Usage()
 
 
 def test_meta_summary_error_hierarchy() -> None:

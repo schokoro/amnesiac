@@ -107,8 +107,6 @@ def test_root_does_not_expose_internal_module_layout() -> None:
         "prompts",
         "config",
         "core",
-        "summarize_axis",
-        "summarize_meta",
         "_call_with_retry",
     )
 

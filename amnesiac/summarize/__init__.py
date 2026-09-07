@@ -10,9 +10,18 @@ from amnesiac.types import Usage
 
 from .config import SummarizeConfig
 from .prompts import PromptPack
-from .summarizer import SummarizeResult, summarize
+from .summarizer import (
+    AxisSummariesResult,
+    MetaResult,
+    SummarizeResult,
+    summarize,
+    summarize_axes,
+    summarize_meta,
+)
 
 __all__ = [
+    "AxisSummariesResult",
+    "MetaResult",
     "MetaSummaryError",
     "PromptPack",
     "PromptRenderError",
@@ -22,4 +31,6 @@ __all__ = [
     "TooManyAxisFailures",
     "Usage",
     "summarize",
+    "summarize_axes",
+    "summarize_meta",
 ]
