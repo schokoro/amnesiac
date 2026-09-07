@@ -59,6 +59,56 @@ async def make_summary():
 `make_summary()` должен вызывать код потребителя внутри уже работающего цикла событий. Его
 результат содержит итоговое мета-саммари, саммари по осям, сведения об ошибках осей и usage.
 
+Если часть осей уже лежит в кеше потребителя, можно досчитать только недостающие и отдельно
+собрать мета-саммари:
+
+```python
+from amnesiac.summarize import summarize_axes, summarize_meta
+
+
+async def make_summary_from_cache(client, model, axes, cached, prompts, limiter, config):
+    missing = {name: docs for name, docs in axes.items() if name not in cached}
+
+    if missing:
+        fresh = await summarize_axes(
+            client=client,
+            model=model,
+            axes=missing,
+            prompts=prompts,
+            limiter=limiter,
+            config=config,
+        )
+        ready = cached | fresh.axis_summaries
+    else:
+        ready = cached
+
+    merged = {name: ready[name] for name in axes}
+
+    return await summarize_meta(
+        client=client,
+        model=model,
+        axis_summaries=merged,
+        prompts=prompts,
+        limiter=limiter,
+        config=config,
+    )
+```
+
+При вызове `summarize()` исключение `MetaSummaryError` поднимается, только если мета-вызов
+исчерпал попытки на пустом ответе, и несёт результат первой стадии целиком:
+`axis_summaries`, `failed_axes`, `axis_errors` и `usage`. Провайдерская ошибка после
+исчерпания ретраев проходит наружу без изменений и не несёт частичного результата.
+У пойманного `MetaSummaryError` в `err.axis_summaries` уже лежат саммари в правильном порядке
+ключей. Передача их в `summarize_meta()` делает повтор одним вызовом провайдера вместо
+повторного расчёта всех осей.
+Чтобы сохранить первую стадию и на этом пути, вызывайте стадии раздельно: сначала
+`summarize_axes()`, чтобы саммари были уже на руках до возможного сбоя мета-вызова,
+затем `summarize_meta()`.
+
+Кешировать можно только оси, отсутствующие в `failed_axes`: для упавшей оси
+`axis_summaries` содержит `failed_axis_placeholder`, и сохранение этой заглушки как результата
+навсегда оставит дату с дыркой, которая выглядит как успешный расчёт.
+
 ## Отбор документов
 
 Этот пример требует установки `amnesiac[select]` и выполняется целиком без сетевых вызовов:
@@ -98,7 +148,7 @@ print(selected)
 контракта](docs/api.md#6-amnesiacselect)).
 
 `amnesiac.select` нестабилен на всём протяжении `0.x`; потребителю этой подсистемы следует
-фиксировать точную версию, например `amnesiac[select]==0.1.0`.
+фиксировать точную версию, например `amnesiac[select]==0.2.0`.
 
 Публичный контракт и подробное описание поведения находятся в [docs/api.md](docs/api.md),
 история изменений — в [CHANGELOG.md](CHANGELOG.md).
