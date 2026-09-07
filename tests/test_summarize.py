@@ -12,6 +12,7 @@ import pytest
 import amnesiac.summarize.summarizer as summarizer_module
 from amnesiac.exceptions import (
     ConfigurationError,
+    MetaSummaryError,
     PromptRenderError,
     SummarizeError,
     TooManyAxisFailures,
@@ -355,7 +356,7 @@ async def test_empty_meta_content_raises_summarize_error(
         ]
     )
 
-    with pytest.raises(SummarizeError, match="meta"):
+    with pytest.raises(MetaSummaryError, match="meta"):
         await summarize(
             client=client,
             model="model",
@@ -365,6 +366,122 @@ async def test_empty_meta_content_raises_summarize_error(
         )
 
     assert len(client.recorded) == 4
+
+
+async def test_meta_summary_error_carries_full_first_stage_result(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+) -> None:
+    placeholder = "DISTINCTIVE FAILED AXIS PLACEHOLDER"
+    scripted_responses = [
+        ("good summary", 1, 2, 3),
+        (None, 4, 5, 9),
+        (None, 6, 7, 13),
+        (None, 8, 9, 17),
+        (None, 10, 11, 21),
+        (None, 12, 13, 25),
+        (None, 14, 15, 29),
+    ]
+    client = fake_client_factory(
+        [
+            response_factory(
+                content,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                include_usage=True,
+            )
+            for content, prompt_tokens, completion_tokens, total_tokens in scripted_responses
+        ]
+    )
+
+    with pytest.raises(MetaSummaryError, match="meta") as exc_info:
+        await summarize(
+            client=client,
+            model="model",
+            axes={"good": [make_doc()], "bad": [make_doc()]},
+            prompts=make_prompts(),
+            config=SummarizeConfig(
+                retry_delays=(0.0,),
+                failed_axis_placeholder=placeholder,
+            ),
+        )
+
+    assert exc_info.value.axis_summaries == {
+        "good": "good summary",
+        "bad": placeholder,
+    }
+    assert exc_info.value.failed_axes == ["bad"]
+    assert exc_info.value.axis_errors == {
+        "bad": repr(SummarizeError("Model returned empty content for axis 'bad'"))
+    }
+    assert exc_info.value.usage == Usage(
+        prompt_tokens=55,
+        completion_tokens=62,
+        total_tokens=117,
+        calls=7,
+    )
+
+
+async def test_too_many_axis_failures_carries_succeeded_summaries_and_usage(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+) -> None:
+    scripted_responses = [
+        (None, 1, 11, 12),
+        (None, 2, 12, 14),
+        ("good summary", 3, 13, 16),
+        (None, 4, 14, 18),
+        (None, 5, 15, 20),
+        (None, 6, 16, 22),
+        (None, 7, 17, 24),
+    ]
+    client = fake_client_factory(
+        [
+            response_factory(
+                content,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                include_usage=True,
+            )
+            for content, prompt_tokens, completion_tokens, total_tokens in scripted_responses
+        ]
+    )
+
+    with pytest.raises(TooManyAxisFailures) as exc_info:
+        await summarize(
+            client=client,
+            model="model",
+            axes={
+                "bad-one": [make_doc()],
+                "bad-two": [make_doc()],
+                "good": [make_doc()],
+            },
+            prompts=make_prompts(),
+            config=SummarizeConfig(
+                retry_delays=(0.0,),
+                max_failed_axes=1,
+                failed_axis_placeholder="MUST NOT APPEAR",
+            ),
+        )
+
+    assert exc_info.value.axis_summaries == {"good": "good summary"}
+    assert set(exc_info.value.axis_summaries) == {"good"}
+    assert "bad-one" not in exc_info.value.axis_summaries
+    assert "bad-two" not in exc_info.value.axis_summaries
+    assert exc_info.value.failures == {
+        "bad-one": repr(SummarizeError("Model returned empty content for axis 'bad-one'")),
+        "bad-two": repr(SummarizeError("Model returned empty content for axis 'bad-two'")),
+    }
+    assert exc_info.value.usage == Usage(
+        prompt_tokens=28,
+        completion_tokens=98,
+        total_tokens=126,
+        calls=7,
+    )
+    assert len(client.recorded) == 7
+    assert all(call["messages"][0]["content"] != "meta system" for call in client.recorded)
 
 
 async def test_usage_includes_meta_and_usage_from_failed_attempt(
@@ -472,6 +589,7 @@ def test_summarize_subpackage_exports_exact_public_api() -> None:
     import amnesiac.summarize as summarize_package
 
     assert summarize_package.__all__ == [
+        "MetaSummaryError",
         "PromptPack",
         "PromptRenderError",
         "SummarizeConfig",

@@ -9,7 +9,12 @@ from typing import Any
 from openai import AsyncOpenAI
 from pydantic import BaseModel
 
-from amnesiac.exceptions import ConfigurationError, SummarizeError, TooManyAxisFailures
+from amnesiac.exceptions import (
+    ConfigurationError,
+    MetaSummaryError,
+    SummarizeError,
+    TooManyAxisFailures,
+)
 from amnesiac.llm import _call_with_retry, _resolve_limiter
 from amnesiac.types import Doc, Usage
 
@@ -103,7 +108,13 @@ async def summarize(
             axis_summaries[name] = result
 
     if len(failed_axes) > resolved_config.max_failed_axes:
-        raise TooManyAxisFailures(axis_errors)
+        raise TooManyAxisFailures(
+            axis_errors,
+            axis_summaries={
+                name: axis_summaries[name] for name in axis_names if name not in axis_errors
+            },
+            usage=usage,
+        )
     if failed_axes:
         logger.warning("Axis failed but continuing: %s", ", ".join(failed_axes))
 
@@ -127,7 +138,12 @@ async def summarize(
             axis_name="meta",
         )
     if meta is None:
-        raise SummarizeError("Model returned empty content for meta summary")
+        raise MetaSummaryError(
+            axis_summaries=axis_summaries,
+            failed_axes=failed_axes,
+            axis_errors=axis_errors,
+            usage=usage,
+        )
 
     return SummarizeResult(
         meta=meta,

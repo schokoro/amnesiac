@@ -1,5 +1,7 @@
 """Shared data models for the amnesiac package."""
 
+from __future__ import annotations
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -21,6 +23,17 @@ class Usage(BaseModel):
     completion_tokens: int = 0
     total_tokens: int = 0
     calls: int = 0
+
+    def __add__(self, other: Usage) -> Usage:
+        """Return the pairwise sum of two usage values."""
+        if not isinstance(other, Usage):
+            return NotImplemented
+        return Usage(
+            prompt_tokens=self.prompt_tokens + other.prompt_tokens,
+            completion_tokens=self.completion_tokens + other.completion_tokens,
+            total_tokens=self.total_tokens + other.total_tokens,
+            calls=self.calls + other.calls,
+        )
 
 
 def _add_usage(target: Usage, other: Usage) -> None:
