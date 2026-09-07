@@ -261,30 +261,99 @@ async def test_too_many_failures_carries_all_errors_and_skips_meta(
     assert len(client.recorded) == 3
 
 
-async def test_empty_axis_content_is_one_failed_call_and_reaches_meta(
+async def test_empty_axis_retries_then_degrades_and_reaches_meta(
     fake_client_factory: Callable[[Sequence[object]], Any],
     response_factory: Callable[..., object],
 ) -> None:
-    client = fake_client_factory([response_factory(None), response_factory("meta")])
+    client = fake_client_factory(
+        [
+            response_factory(
+                None,
+                prompt_tokens=1,
+                completion_tokens=2,
+                total_tokens=3,
+                include_usage=True,
+            ),
+            response_factory(
+                None,
+                prompt_tokens=4,
+                completion_tokens=5,
+                total_tokens=9,
+                include_usage=True,
+            ),
+            response_factory(
+                None,
+                prompt_tokens=6,
+                completion_tokens=7,
+                total_tokens=13,
+                include_usage=True,
+            ),
+            response_factory(
+                "meta",
+                prompt_tokens=8,
+                completion_tokens=9,
+                total_tokens=17,
+                include_usage=True,
+            ),
+        ]
+    )
 
     result = await summarize(
         client=client,
         model="model",
         axes={"empty": [make_doc()]},
         prompts=make_prompts(),
+        config=SummarizeConfig(retry_delays=(0.0,), failed_axis_placeholder="FAILED AXIS"),
     )
 
     assert result.failed_axes == ["empty"]
     assert "SummarizeError" in result.axis_errors["empty"]
-    assert result.axis_summaries["empty"] in client.recorded[-1]["messages"][1]["content"]
-    assert len(client.recorded) == 2
+    assert result.axis_summaries["empty"] == "FAILED AXIS"
+    assert "FAILED AXIS" in client.recorded[-1]["messages"][1]["content"]
+    assert len(client.recorded) == 4
+    assert result.usage == Usage(
+        prompt_tokens=19,
+        completion_tokens=23,
+        total_tokens=42,
+        calls=4,
+    )
+
+
+async def test_empty_axes_respect_max_failed_axes_and_skip_meta(
+    fake_client_factory: Callable[[Sequence[object]], Any],
+    response_factory: Callable[..., object],
+) -> None:
+    client = fake_client_factory([response_factory(None) for _ in range(6)])
+
+    with pytest.raises(TooManyAxisFailures) as exc_info:
+        await summarize(
+            client=client,
+            model="model",
+            axes={name: [make_doc()] for name in ("one", "two", "three")},
+            prompts=make_prompts(),
+            config=SummarizeConfig(
+                max_attempts=2,
+                retry_delays=(0.0,),
+                max_failed_axes=2,
+            ),
+        )
+
+    assert len(client.recorded) == 6
+    assert set(exc_info.value.failures) == {"one", "two", "three"}
 
 
 async def test_empty_meta_content_raises_summarize_error(
     fake_client_factory: Callable[[Sequence[object]], Any],
     response_factory: Callable[..., object],
 ) -> None:
-    client = fake_client_factory([response_factory("axis"), response_factory(None)])
+    client = fake_client_factory(
+        [
+            response_factory("axis"),
+            response_factory(None),
+            response_factory(None),
+            response_factory(None),
+        ]
+    )
 
     with pytest.raises(SummarizeError, match="meta"):
         await summarize(
@@ -292,7 +361,10 @@ async def test_empty_meta_content_raises_summarize_error(
             model="model",
             axes={"axis": [make_doc()]},
             prompts=make_prompts(),
+            config=SummarizeConfig(retry_delays=(0.0,)),
         )
+
+    assert len(client.recorded) == 4
 
 
 async def test_usage_includes_meta_and_usage_from_failed_attempt(
